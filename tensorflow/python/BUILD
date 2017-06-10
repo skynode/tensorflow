@@ -320,7 +320,10 @@ py_test(
 cc_library(
     name = "python_op_gen",
     srcs = ["framework/python_op_gen.cc"],
-    hdrs = ["framework/python_op_gen.h"],
+    hdrs = [
+        "framework/python_op_gen.h",
+        "framework/python_op_gen_internal.h",
+    ],
     visibility = ["//visibility:public"],
     deps = [
         "//tensorflow/core:framework",
@@ -806,7 +809,6 @@ py_test(
     srcs = ["framework/meta_graph_test.py"],
     main = "framework/meta_graph_test.py",
     srcs_version = "PY2AND3",
-    tags = ["no_windows"],
     deps = [
         ":array_ops",
         ":client_testlib",
@@ -1547,6 +1549,7 @@ py_library(
     srcs_version = "PY2AND3",
     deps = [
         ":array_ops",
+        ":constant_op",
         ":framework",
         ":framework_for_generated_wrappers",
         ":lookup_ops_gen",
@@ -2178,7 +2181,6 @@ cuda_py_test(
         ":test_ops",
         "//third_party/py/numpy",
     ],
-    tags = ["no_windows"],
 )
 
 cuda_py_test(
@@ -2913,7 +2915,6 @@ cuda_py_test(
         ":variables",
         "//third_party/py/numpy",
     ],
-    tags = ["no_windows"],
 )
 
 tf_py_test(
@@ -2928,7 +2929,6 @@ tf_py_test(
         ":training",
         ":variables",
     ],
-    tags = ["no_windows"],
 )
 
 py_library(
@@ -2954,39 +2954,35 @@ tf_cuda_library(
     alwayslink = 1,
 )
 
-# Disabled due to http://b/62145493
-# py_test(
-#     name = "session_test",
-#     size = "medium",  # http://b/62144199
-#     srcs = ["client/session_test.py"],
-#     srcs_version = "PY2AND3",
-#     tags = [
-#         "no_gpu",
-#         "no_pip_gpu",  # testInteractivePlacePrunedGraph fails on invalid assumption about GPU ops.
-#         "no_windows",
-#     ],
-#     deps = [
-#         ":array_ops",
-#         ":client",
-#         ":construction_fails_op",
-#         ":control_flow_ops",
-#         ":data_flow_ops",
-#         ":errors",
-#         ":framework",
-#         ":framework_for_generated_wrappers",
-#         ":framework_test_lib",
-#         ":math_ops",
-#         ":platform_test",
-#         ":state_ops",
-#         ":training",
-#         ":util",
-#         ":variables",
-#         "//third_party/py/numpy",
-#         "@six_archive//:six",
-#         "//tensorflow/core/distributed_runtime/rpc:grpc_server_lib",
-#         "//tensorflow/core/distributed_runtime/rpc:grpc_session",
-#     ],
-# )
+py_test(
+    name = "session_test",
+    size = "small",
+    srcs = ["client/session_test.py"],
+    srcs_version = "PY2AND3",
+    tags = [
+        "no_gpu",
+        "no_pip_gpu",  # testInteractivePlacePrunedGraph fails on invalid assumption about GPU ops.
+        "no_windows",
+    ],
+    deps = [
+        ":array_ops",
+        ":client",
+        ":control_flow_ops",
+        ":data_flow_ops",
+        ":errors",
+        ":framework",
+        ":framework_for_generated_wrappers",
+        ":framework_test_lib",
+        ":math_ops",
+        ":platform_test",
+        ":state_ops",
+        ":training",
+        ":util",
+        ":variables",
+        "//third_party/py/numpy",
+        "@six_archive//:six",
+    ],
+)
 
 py_test(
     name = "session_clusterspec_prop_test",
@@ -3237,7 +3233,6 @@ cuda_py_test(
         "@six_archive//:six",
         "//tensorflow/core:protos_all_py",
     ],
-    tags = ["no_windows"],
 )
 
 py_test(
@@ -3575,13 +3570,11 @@ py_test(
     ],
 )
 
-py_test(
+cuda_py_test(
     name = "layers_normalization_test",
     size = "small",
     srcs = ["layers/normalization_test.py"],
-    main = "layers/normalization_test.py",
-    srcs_version = "PY2AND3",
-    deps = [
+    additional_deps = [
         ":array_ops",
         ":client_testlib",
         ":framework_for_generated_wrappers",
@@ -3591,6 +3584,7 @@ py_test(
         ":variables",
         "//third_party/py/numpy",
     ],
+    main = "layers/normalization_test.py",
 )
 
 # -----------------------------------------------------------------------------
@@ -3820,10 +3814,17 @@ py_test(
     srcs_version = "PY2AND3",
     tags = ["no_pip"],
     deps = [
+        ":array_ops",
         ":client_testlib",
         ":cost_analyzer",
         ":framework_for_generated_wrappers",
         ":math_ops",
+        ":nn",
+        ":nn_grad",
+        ":random_ops",
+        ":state_ops",
+        ":training",
+        ":variables",
         "//tensorflow/core:protos_all_py",
         "//third_party/py/numpy",
     ],

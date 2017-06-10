@@ -799,7 +799,6 @@ tf_py_test(
         "//tensorflow/python:logging_ops",
         "//tensorflow/python:summary",
     ],
-    tags = ["no_windows"],
 )
 
 tf_py_test(
@@ -947,7 +946,7 @@ cuda_py_test(
     tags = ["notsan"],
 )
 
-tf_py_test(
+cuda_py_test(
     name = "diag_op_test",
     size = "medium",
     srcs = ["diag_op_test.py"],
@@ -979,6 +978,8 @@ tf_py_test(
         "//tensorflow/python:util",
         "//tensorflow/python:variables",
     ],
+    data = ["//tensorflow/core:lmdb_testdata"],
+    tags = ["no_windows"],
 )
 
 cuda_py_test(
@@ -1954,7 +1955,6 @@ cuda_py_test(
         "//tensorflow/python:variables",
     ],
     flaky = 1,  # create_local_cluster sometimes times out.
-    tags = ["nomsan"],  # b/38390993
 )
 
 cuda_py_test(
@@ -2143,7 +2143,6 @@ cuda_py_test(
         "//tensorflow/python:nn_grad",
         "//tensorflow/python:nn_ops",
     ],
-    tags = ["no_windows"],
 )
 
 tf_py_test(
@@ -2387,12 +2386,12 @@ cuda_py_test(
         "//tensorflow/python:util",
         "//tensorflow/python:data_flow_ops",
     ],
-    shard_count = 2,
+    tags = ["manual"],  # http://b/62429636
 )
 
 cuda_py_test(
     name = "map_stage_op_test",
-    size = "small",
+    size = "medium",
     srcs = ["map_stage_op_test.py"],
     additional_deps = [
         "//tensorflow/python:array_ops",
@@ -2402,6 +2401,7 @@ cuda_py_test(
         "//tensorflow/python:util",
         "//tensorflow/python:data_flow_ops",
     ],
+    tags = ["manual"],  # http://b/62429636
 )
 
 cuda_py_test(
@@ -2630,7 +2630,6 @@ tf_py_test(
         "//tensorflow/python:sets",
         "//tensorflow/python:sparse_ops",
     ],
-    tags = ["no_windows"],
 )
 
 tf_py_test(

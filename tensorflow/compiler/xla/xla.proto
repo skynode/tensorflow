@@ -27,6 +27,10 @@ message DebugOptions {
   // various stages in compilation (file names are LOG(INFO)'d). Set to ".*" to
   // dump *all* HLO modules.
   string xla_generate_hlo_graph = 1;
+
+  // List of HLO passes to disable. These names must exactly match the pass
+  // names as specified by the HloPassInterface::name() method.
+  repeated string xla_disable_hlo_passes = 2;
 }
 
 // These settings control how XLA compiles and/or runs code.  Not all settings
@@ -92,11 +96,11 @@ message TransferToClientRequest {
 }
 
 message TransferToClientResponse {
-  Literal literal = 1;
+  LiteralProto literal = 1;
 }
 
 message TransferToServerRequest {
-  Literal literal = 1;
+  LiteralProto literal = 1;
   DeviceHandle device_handle = 2;
 }
 
@@ -105,7 +109,7 @@ message TransferToServerResponse {
 }
 
 message TransferToInfeedRequest {
-  Literal literal = 1;
+  LiteralProto literal = 1;
   int64 replica_id = 2;
   DeviceHandle device_handle = 3;
 }
@@ -123,7 +127,7 @@ message TransferFromOutfeedRequest {
 }
 
 message TransferFromOutfeedResponse {
-  Literal literal = 1;
+  LiteralProto literal = 1;
 }
 
 message ResetDeviceRequest {
