@@ -2,12 +2,11 @@
 
 package(
     default_visibility = ["//visibility:public"],
-    features = ["-layering_check"],
 )
 
 licenses(["notice"])  # Apache 2.0
 
-exports_files(["LICENSE"])
+load("//tensorflow:tensorflow.bzl", "tf_cc_test")
 
 cc_library(
     name = "batch_scheduler_hdrs",
@@ -25,14 +24,13 @@ cc_library(
     ],
 )
 
-cc_test(
+tf_cc_test(
     name = "batch_scheduler_test",
-    srcs = [
-        "batch_scheduler_test.cc",
-    ],
+    srcs = ["batch_scheduler_test.cc"],
     deps = [
         ":batch_scheduler",
         "//tensorflow/core:lib",
+        "//tensorflow/core:test",
         "//tensorflow/core:test_main",
     ],
 )
@@ -52,17 +50,15 @@ cc_library(
     hdrs = ["shared_batch_scheduler.h"],
     deps = [
         ":batch_scheduler",
-        ":shared_batch_scheduler_hdrs",
+        "//tensorflow/contrib/batching/util:periodic_function_dynamic",
         "//tensorflow/core:lib",
     ],
     alwayslink = 1,
 )
 
-cc_test(
+tf_cc_test(
     name = "shared_batch_scheduler_test",
-    srcs = [
-        "shared_batch_scheduler_test.cc",
-    ],
+    srcs = ["shared_batch_scheduler_test.cc"],
     deps = [
         ":shared_batch_scheduler",
         "//tensorflow/contrib/batching/test_util:fake_clock_env",
@@ -81,11 +77,9 @@ cc_library(
     ],
 )
 
-cc_test(
+tf_cc_test(
     name = "basic_batch_scheduler_test",
-    srcs = [
-        "basic_batch_scheduler_test.cc",
-    ],
+    srcs = ["basic_batch_scheduler_test.cc"],
     deps = [
         ":basic_batch_scheduler",
         ":batch_scheduler",
@@ -95,7 +89,7 @@ cc_test(
     ],
 )
 
-cc_test(
+tf_cc_test(
     name = "basic_batch_scheduler_benchmark",
     srcs = ["basic_batch_scheduler_benchmark.cc"],
     tags = [
@@ -122,9 +116,7 @@ load("//tensorflow:tensorflow.bzl", "tf_custom_op_py_library")
 
 tf_custom_op_library(
     name = "python/ops/_batch_ops.so",
-    srcs = [
-        "ops/batch_ops.cc",
-    ],
+    srcs = ["ops/batch_ops.cc"],
     deps = [
         "//tensorflow/contrib/batching/kernels:batch_kernels",
     ],
@@ -186,12 +178,11 @@ py_test(
     ],
     deps = [
         ":batch_py",
-        "//tensorflow/python:framework_test_lib",
+        "//tensorflow/python:array_ops",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:dtypes",
         "//tensorflow/python:gradients",
-        "//tensorflow/python:platform_test",
         "//tensorflow/python:script_ops",
-        "//tensorflow/python:state_ops",
-        "//tensorflow/python:variables",
     ],
 )
 

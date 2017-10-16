@@ -22,7 +22,6 @@ limitations under the License.
 #include <utility>
 
 #include "tensorflow/compiler/xla/layout_util.h"
-#include "tensorflow/compiler/xla/legacy_flags/user_computation_flags.h"
 #include "tensorflow/compiler/xla/literal_util.h"
 #include "tensorflow/compiler/xla/ptr_util.h"
 #include "tensorflow/compiler/xla/service/hlo_computation.h"
@@ -49,6 +48,8 @@ HloOpcode UnaryOperationToHloOpcode(UnaryOperation unop) {
       return HloOpcode::kAbs;
     case UNOP_CEIL:
       return HloOpcode::kCeil;
+    case UNOP_COS:
+      return HloOpcode::kCos;
     case UNOP_EXP:
       return HloOpcode::kExp;
     case UNOP_FLOOR:
@@ -57,12 +58,16 @@ HloOpcode UnaryOperationToHloOpcode(UnaryOperation unop) {
       return HloOpcode::kIsFinite;
     case UNOP_LOG:
       return HloOpcode::kLog;
-    case UNOP_LOGICAL_NOT:
-      return HloOpcode::kLogicalNot;
+    case UNOP_NOT:
+      return HloOpcode::kNot;
     case UNOP_NEGATE:
       return HloOpcode::kNegate;
+    case UNOP_ROUND_NEAREST_AFZ:
+      return HloOpcode::kRoundNearestAfz;
     case UNOP_SIGN:
       return HloOpcode::kSign;
+    case UNOP_SIN:
+      return HloOpcode::kSin;
     case UNOP_SORT:
       return HloOpcode::kSort;
     case UNOP_TANH:
@@ -106,10 +111,16 @@ HloOpcode BinaryOperationToHloOpcode(BinaryOperation binop) {
       return HloOpcode::kPower;
     case BINOP_REM:
       return HloOpcode::kRemainder;
-    case BINOP_LOGICAL_OR:
-      return HloOpcode::kLogicalOr;
-    case BINOP_LOGICAL_AND:
-      return HloOpcode::kLogicalAnd;
+    case BINOP_OR:
+      return HloOpcode::kOr;
+    case BINOP_AND:
+      return HloOpcode::kAnd;
+    case BINOP_SHIFT_LEFT:
+      return HloOpcode::kShiftLeft;
+    case BINOP_SHIFT_RIGHT_ARITHMETIC:
+      return HloOpcode::kShiftRightArithmetic;
+    case BINOP_SHIFT_RIGHT_LOGICAL:
+      return HloOpcode::kShiftRightLogical;
     default:
       LOG(FATAL) << "unhandled operation " << binop;
   }
@@ -307,6 +318,11 @@ StatusOr<ComputationDataHandle> UserComputation::AddGetTupleElementInstruction(
 
   TF_ASSIGN_OR_RETURN(const OperationRequest* operand,
                       LookUpRequest(get_tuple_element_request.operand()));
+  if (!ShapeUtil::IsTuple(operand->output_shape())) {
+    return InvalidArgument(
+        "Operand to GetTupleElement() is not a tuple; got %s",
+        ShapeUtil::HumanString(operand->output_shape()).c_str());
+  }
   Shape element_shape = ShapeUtil::GetTupleElementShape(
       operand->output_shape(), get_tuple_element_request.index());
 
@@ -411,7 +427,8 @@ StatusOr<ComputationDataHandle> UserComputation::AddMapInstruction(
       to_apply_computation.ComputeProgramShape(to_apply_version));
   TF_ASSIGN_OR_RETURN(
       Shape inferred_shape,
-      ShapeInference::InferMapShape(operand_shapes, *to_apply_program_shape));
+      ShapeInference::InferMapShape(operand_shapes, *to_apply_program_shape,
+                                    AsInt64Slice(map_request.dimensions())));
 
   ComputationDataHandle handle = CreateComputationDataHandle();
 
@@ -462,6 +479,137 @@ StatusOr<ComputationDataHandle> UserComputation::AddReduceInstruction(
   VLOG(1) << "AddReduceInstruction (" << GetVersionedHandleInternal()
           << "), data handle " << handle.handle() << ": "
           << reduce_request.ShortDebugString();
+  return handle;
+}
+
+StatusOr<ComputationDataHandle>
+UserComputation::AddBatchNormTrainingInstruction(
+    const BatchNormTrainingRequest& batch_norm_training_request) {
+  tensorflow::mutex_lock lock(mutex_);
+
+  TF_ASSIGN_OR_RETURN(const OperationRequest* operand,
+                      LookUpRequest(batch_norm_training_request.operand()));
+
+  TF_ASSIGN_OR_RETURN(const OperationRequest* scale,
+                      LookUpRequest(batch_norm_training_request.scale()));
+
+  TF_ASSIGN_OR_RETURN(const OperationRequest* offset,
+                      LookUpRequest(batch_norm_training_request.offset()));
+
+  ComputationDataHandle handle = CreateComputationDataHandle();
+
+  OperationRequest& request =
+      (*session_computation_.mutable_requests())[handle.handle()];
+
+  TF_ASSIGN_OR_RETURN(
+      Shape inferred_shape,
+      ShapeInference::InferBatchNormTrainingShape(
+          operand->output_shape(), scale->output_shape(),
+          offset->output_shape(), batch_norm_training_request.feature_index()));
+
+  *request.mutable_output_shape() = inferred_shape;
+
+  *request.mutable_output_handle() = handle;
+
+  *request.mutable_request()->mutable_batch_norm_training_request() =
+      batch_norm_training_request;
+
+  VLOG(1) << "AddBatchNormTrainingInstruction (" << GetVersionedHandleInternal()
+          << "), data handle " << handle.handle() << ": "
+          << batch_norm_training_request.ShortDebugString();
+
+  return handle;
+}
+
+StatusOr<ComputationDataHandle>
+UserComputation::AddBatchNormInferenceInstruction(
+    const BatchNormInferenceRequest& batch_norm_inference_request) {
+  tensorflow::mutex_lock lock(mutex_);
+
+  TF_ASSIGN_OR_RETURN(const OperationRequest* operand,
+                      LookUpRequest(batch_norm_inference_request.operand()));
+
+  TF_ASSIGN_OR_RETURN(const OperationRequest* scale,
+                      LookUpRequest(batch_norm_inference_request.scale()));
+
+  TF_ASSIGN_OR_RETURN(const OperationRequest* offset,
+                      LookUpRequest(batch_norm_inference_request.offset()));
+
+  TF_ASSIGN_OR_RETURN(const OperationRequest* mean,
+                      LookUpRequest(batch_norm_inference_request.mean()));
+
+  TF_ASSIGN_OR_RETURN(const OperationRequest* variance,
+                      LookUpRequest(batch_norm_inference_request.variance()));
+
+  ComputationDataHandle handle = CreateComputationDataHandle();
+
+  OperationRequest& request =
+      (*session_computation_.mutable_requests())[handle.handle()];
+
+  TF_ASSIGN_OR_RETURN(Shape inferred_shape,
+                      ShapeInference::InferBatchNormInferenceShape(
+                          operand->output_shape(), scale->output_shape(),
+                          offset->output_shape(), mean->output_shape(),
+                          variance->output_shape(),
+                          batch_norm_inference_request.feature_index()));
+
+  *request.mutable_output_shape() = inferred_shape;
+
+  *request.mutable_output_handle() = handle;
+
+  *request.mutable_request()->mutable_batch_norm_inference_request() =
+      batch_norm_inference_request;
+
+  VLOG(1) << "AddBatchNormInferenceInstruction ("
+          << GetVersionedHandleInternal() << "), data handle "
+          << handle.handle() << ": "
+          << batch_norm_inference_request.ShortDebugString();
+
+  return handle;
+}
+
+StatusOr<ComputationDataHandle> UserComputation::AddBatchNormGradInstruction(
+    const BatchNormGradRequest& batch_norm_grad_request) {
+  tensorflow::mutex_lock lock(mutex_);
+
+  TF_ASSIGN_OR_RETURN(const OperationRequest* operand,
+                      LookUpRequest(batch_norm_grad_request.operand()));
+
+  TF_ASSIGN_OR_RETURN(const OperationRequest* scale,
+                      LookUpRequest(batch_norm_grad_request.scale()));
+
+  TF_ASSIGN_OR_RETURN(const OperationRequest* mean,
+                      LookUpRequest(batch_norm_grad_request.mean()));
+
+  TF_ASSIGN_OR_RETURN(const OperationRequest* variance,
+                      LookUpRequest(batch_norm_grad_request.variance()));
+
+  TF_ASSIGN_OR_RETURN(const OperationRequest* grad_output,
+                      LookUpRequest(batch_norm_grad_request.grad_output()));
+
+  ComputationDataHandle handle = CreateComputationDataHandle();
+
+  OperationRequest& request =
+      (*session_computation_.mutable_requests())[handle.handle()];
+
+  TF_ASSIGN_OR_RETURN(
+      Shape inferred_shape,
+      ShapeInference::InferBatchNormGradShape(
+          operand->output_shape(), scale->output_shape(), mean->output_shape(),
+          variance->output_shape(), grad_output->output_shape(),
+          batch_norm_grad_request.feature_index()));
+
+  *request.mutable_output_shape() = inferred_shape;
+
+  *request.mutable_output_handle() = handle;
+
+  *request.mutable_request()->mutable_batch_norm_grad_request() =
+      batch_norm_grad_request;
+
+  VLOG(1) << "AddBatchNormGradInstruction (" << GetVersionedHandleInternal()
+          << "), data handle " << handle.handle() << ": "
+          << batch_norm_grad_request.ShortDebugString();
+
   return handle;
 }
 
@@ -703,7 +851,8 @@ StatusOr<ComputationDataHandle> UserComputation::AddSliceInstruction(
       Shape new_shape,
       ShapeInference::InferSliceShape(
           operand->output_shape(), AsInt64Slice(slice_request.start_indices()),
-          AsInt64Slice(slice_request.limit_indices())));
+          AsInt64Slice(slice_request.limit_indices()),
+          AsInt64Slice(slice_request.strides())));
 
   ComputationDataHandle handle = CreateComputationDataHandle();
 
@@ -840,6 +989,34 @@ StatusOr<ComputationDataHandle> UserComputation::AddConvertInstruction(
   return handle;
 }
 
+StatusOr<ComputationDataHandle> UserComputation::AddReducePrecisionInstruction(
+    const ReducePrecisionRequest& reduce_precision_request) {
+  tensorflow::mutex_lock lock(mutex_);
+
+  TF_ASSIGN_OR_RETURN(const OperationRequest* operand,
+                      LookUpRequest(reduce_precision_request.operand()));
+
+  TF_ASSIGN_OR_RETURN(
+      Shape new_shape,
+      ShapeInference::InferReducePrecisionShape(
+          operand->output_shape(), reduce_precision_request.exponent_bits(),
+          reduce_precision_request.mantissa_bits()));
+
+  ComputationDataHandle handle = CreateComputationDataHandle();
+
+  OperationRequest& request =
+      (*session_computation_.mutable_requests())[handle.handle()];
+  *request.mutable_output_handle() = handle;
+  *request.mutable_output_shape() = new_shape;
+  *request.mutable_request()->mutable_reduce_precision_request() =
+      reduce_precision_request;
+
+  VLOG(1) << "AddReducePrecisionInstruction (" << GetVersionedHandleInternal()
+          << "), data handle " << handle.handle() << ": "
+          << reduce_precision_request.ShortDebugString();
+  return handle;
+}
+
 StatusOr<ComputationDataHandle> UserComputation::AddConvolveInstruction(
     const ConvolveRequest& convolve_request) {
   tensorflow::mutex_lock lock(mutex_);
@@ -896,9 +1073,6 @@ StatusOr<ComputationDataHandle> UserComputation::AddInfeedInstruction(
   tensorflow::mutex_lock lock(mutex_);
 
   const Shape& shape = infeed_request.shape();
-  if (ShapeUtil::IsNestedTuple(shape)) {
-    return InvalidArgument("Infeed does not support nested tuple shapes");
-  }
   if (!LayoutUtil::HasLayout(shape)) {
     return InvalidArgument("Given shape to Infeed must have a layout");
   }
@@ -922,9 +1096,6 @@ Status UserComputation::AddOutfeedInstruction(
   tensorflow::mutex_lock lock(mutex_);
 
   const Shape& shape = outfeed_request.shape();
-  if (ShapeUtil::IsNestedTuple(shape)) {
-    return InvalidArgument("Outfeed does not support nested tuple shapes");
-  }
   if (!LayoutUtil::HasLayout(shape)) {
     return InvalidArgument("Given shape to Outfeed must have a layout");
   }
@@ -1127,13 +1298,30 @@ Status UserComputation::SetOpMetadata(const ComputationDataHandle& handle,
 
   int64 handle_value = handle.handle();
   if (session_computation_.requests().count(handle_value) == 0) {
-    return InvalidArgument("Invalid handle in SetDebugMetadata (%lld)",
+    return InvalidArgument("Invalid handle in SetOpMetadata (%lld)",
                            handle_value);
   }
   *session_computation_.mutable_requests()
        ->at(handle_value)
        .mutable_request()
        ->mutable_metadata() = metadata;
+  return Status::OK();
+}
+
+Status UserComputation::SetOpDeviceAssignment(
+    const ComputationDataHandle& handle,
+    const OpDeviceAssignment& device_assignment) {
+  tensorflow::mutex_lock lock(mutex_);
+
+  int64 handle_value = handle.handle();
+  if (session_computation_.requests().count(handle_value) == 0) {
+    return InvalidArgument("Invalid handle in SetOpDeviceAssignment (%lld)",
+                           handle_value);
+  }
+  *session_computation_.mutable_requests()
+       ->at(handle_value)
+       .mutable_request()
+       ->mutable_device_assignment() = device_assignment;
   return Status::OK();
 }
 
@@ -1555,6 +1743,55 @@ void ConstantVisitor(const SessionComputation& session_computation,
       break;
     }
 
+    case OpRequest::kBatchNormTrainingRequest: {
+      const BatchNormTrainingRequest& batch_norm_training_request =
+          request.request().batch_norm_training_request();
+      ConstantVisitor(session_computation,
+                      batch_norm_training_request.operand(), visited,
+                      is_constant);
+      ConstantVisitor(session_computation, batch_norm_training_request.scale(),
+                      visited, is_constant);
+      ConstantVisitor(session_computation, batch_norm_training_request.offset(),
+                      visited, is_constant);
+      break;
+    }
+
+    case OpRequest::kBatchNormInferenceRequest: {
+      const BatchNormInferenceRequest& batch_norm_inference_request =
+          request.request().batch_norm_inference_request();
+      ConstantVisitor(session_computation,
+                      batch_norm_inference_request.operand(), visited,
+                      is_constant);
+      ConstantVisitor(session_computation, batch_norm_inference_request.scale(),
+                      visited, is_constant);
+      ConstantVisitor(session_computation,
+                      batch_norm_inference_request.offset(), visited,
+                      is_constant);
+      ConstantVisitor(session_computation, batch_norm_inference_request.mean(),
+                      visited, is_constant);
+      ConstantVisitor(session_computation,
+                      batch_norm_inference_request.variance(), visited,
+                      is_constant);
+      break;
+    }
+
+    case OpRequest::kBatchNormGradRequest: {
+      const BatchNormGradRequest& batch_norm_grad_request =
+          request.request().batch_norm_grad_request();
+      ConstantVisitor(session_computation, batch_norm_grad_request.operand(),
+                      visited, is_constant);
+      ConstantVisitor(session_computation, batch_norm_grad_request.scale(),
+                      visited, is_constant);
+      ConstantVisitor(session_computation, batch_norm_grad_request.mean(),
+                      visited, is_constant);
+      ConstantVisitor(session_computation, batch_norm_grad_request.variance(),
+                      visited, is_constant);
+      ConstantVisitor(session_computation,
+                      batch_norm_grad_request.grad_output(), visited,
+                      is_constant);
+      break;
+    }
+
     case OpRequest::kBinaryOpRequest: {
       const BinaryOpRequest& binary_op_request =
           request.request().binary_op_request();
@@ -1823,7 +2060,6 @@ Status UserComputation::CheckParametersAreContiguous(
     }
   }
 
-  auto program_shape = MakeUnique<ProgramShape>();
   for (int64 i = 0; i < parameter_requests.size(); ++i) {
     auto it = parameter_requests.find(i);
     if (it == parameter_requests.end()) {
@@ -1849,26 +2085,31 @@ class ComputationLowerer {
       const SessionComputation& session_computation,
       VersionedComputationHandle::Version version,
       UserComputation::HloComputationResolver hlo_resolver,
+      const DebugOptions& debug_options,
       bool include_unreachable_instructions) {
     ComputationLowerer lowerer(computation_name, session_computation, version,
-                               std::move(hlo_resolver));
-    return lowerer.Lower(include_unreachable_instructions);
+                               std::move(hlo_resolver), debug_options,
+                               include_unreachable_instructions);
+    return lowerer.Lower();
   }
 
  private:
   ComputationLowerer(const string& computation_name,
                      const SessionComputation& session_computation,
                      VersionedComputationHandle::Version version,
-                     UserComputation::HloComputationResolver hlo_resolver)
+                     UserComputation::HloComputationResolver hlo_resolver,
+                     const DebugOptions& debug_options,
+                     bool include_unreachable_instructions)
       : hlo_builder_(computation_name),
         session_computation_(session_computation),
         version_(version),
-        hlo_resolver_(std::move(hlo_resolver)) {}
+        hlo_resolver_(std::move(hlo_resolver)),
+        debug_options_(debug_options),
+        include_unreachable_instructions_(include_unreachable_instructions) {}
 
   // Build an HLO computation from the SessionComputation at the given
   // version.
-  StatusOr<std::unique_ptr<HloComputation>> Lower(
-      bool include_unreachable_instructions);
+  StatusOr<std::unique_ptr<HloComputation>> Lower();
 
  private:
   // Traverses the computation 'root' using a DFS, calling 'visit' in postorder.
@@ -1898,6 +2139,8 @@ class ComputationLowerer {
   const SessionComputation& session_computation_;
   const VersionedComputationHandle::Version version_;
   const UserComputation::HloComputationResolver hlo_resolver_;
+  const DebugOptions& debug_options_;
+  const bool include_unreachable_instructions_;
 };
 
 // Calls 'apply' on each operand of 'request'.
@@ -1960,6 +2203,40 @@ static void ForEachOperand(
           request.request().convolve_request();
       apply(convolve_request.lhs());
       apply(convolve_request.rhs());
+      break;
+    }
+
+    case OpRequest::kBatchNormTrainingRequest: {
+      const BatchNormTrainingRequest& batch_norm_training_request =
+          request.request().batch_norm_training_request();
+
+      apply(batch_norm_training_request.operand());
+      apply(batch_norm_training_request.scale());
+      apply(batch_norm_training_request.offset());
+      break;
+    }
+
+    case OpRequest::kBatchNormInferenceRequest: {
+      const BatchNormInferenceRequest& batch_norm_inference_request =
+          request.request().batch_norm_inference_request();
+
+      apply(batch_norm_inference_request.operand());
+      apply(batch_norm_inference_request.scale());
+      apply(batch_norm_inference_request.offset());
+      apply(batch_norm_inference_request.mean());
+      apply(batch_norm_inference_request.variance());
+      break;
+    }
+
+    case OpRequest::kBatchNormGradRequest: {
+      const BatchNormGradRequest& batch_norm_grad_request =
+          request.request().batch_norm_grad_request();
+
+      apply(batch_norm_grad_request.operand());
+      apply(batch_norm_grad_request.scale());
+      apply(batch_norm_grad_request.mean());
+      apply(batch_norm_grad_request.variance());
+      apply(batch_norm_grad_request.grad_output());
       break;
     }
 
@@ -2116,6 +2393,13 @@ static void ForEachOperand(
       break;
     }
 
+    case OpRequest::kReducePrecisionRequest: {
+      const ReducePrecisionRequest& reduce_precision_request =
+          request.request().reduce_precision_request();
+      apply(reduce_precision_request.operand());
+      break;
+    }
+
     case OpRequest::kTraceRequest: {
       const TraceRequest& trace_request = request.request().trace_request();
       apply(trace_request.operand());
@@ -2174,8 +2458,7 @@ void ComputationLowerer::TraversePostorder(
   }
 }
 
-StatusOr<std::unique_ptr<HloComputation>> ComputationLowerer::Lower(
-    bool include_unreachable_instructions) {
+StatusOr<std::unique_ptr<HloComputation>> ComputationLowerer::Lower() {
   // Map from ComputationDataHandle to HLO instruction. Serves as a record of
   // which operations have been visited as well as a cache for looking up
   // ComputationDataHandles as HloInstructions.
@@ -2191,7 +2474,7 @@ StatusOr<std::unique_ptr<HloComputation>> ComputationLowerer::Lower(
   HloInstruction* hlo_root =
       instructions.at(root_request->output_handle().handle());
 
-  if (include_unreachable_instructions) {
+  if (include_unreachable_instructions_) {
     // Iterate through all computation data handles, and visit any unvisited
     // operations.
     for (int64 request_num = 1; request_num <= version_; ++request_num) {
@@ -2219,14 +2502,16 @@ HloInstruction* ComputationLowerer::ImplicitBroadcastToExplicitBroadcast(
       operand->shape().element_type(), AsInt64Slice(output_shape.dimensions()));
   // Do explicit broadcast for scalar.
   if (ShapeUtil::IsScalar(operand->shape())) {
-    return hlo_builder_.AddInstruction(HloInstruction::CreateBroadcast(
-        broadcast_shape, operand, AsInt64Slice(broadcast_shape.dimensions())));
+    HloInstruction* broadcast = hlo_builder_.AddInstruction(
+        HloInstruction::CreateBroadcast(broadcast_shape, operand, {}));
+    broadcast->set_device_assignment(operand->device_assignment());
+    return broadcast;
   }
   // Do explicit broadcast for degenerate broadcast.
   std::vector<int64> broadcast_dimensions;
   std::vector<int64> reshaped_dimensions;
   for (int i = 0; i < ShapeUtil::Rank(operand->shape()); i++) {
-    if (operand->shape().dimensions(i) > 1) {
+    if (operand->shape().dimensions(i) == output_shape.dimensions(i)) {
       broadcast_dimensions.push_back(i);
       reshaped_dimensions.push_back(operand->shape().dimensions(i));
     }
@@ -2237,9 +2522,13 @@ HloInstruction* ComputationLowerer::ImplicitBroadcastToExplicitBroadcast(
           ShapeUtil::MakeShape(operand->shape().element_type(),
                                reshaped_dimensions),
           operand));
+  reshaped_operand->set_device_assignment(operand->device_assignment());
   // Broadcast 'reshape' up to the larger size.
-  return hlo_builder_.AddInstruction(HloInstruction::CreateBroadcast(
-      broadcast_shape, reshaped_operand, broadcast_dimensions));
+  HloInstruction* broadcast =
+      hlo_builder_.AddInstruction(HloInstruction::CreateBroadcast(
+          broadcast_shape, reshaped_operand, broadcast_dimensions));
+  broadcast->set_device_assignment(operand->device_assignment());
+  return broadcast;
 }
 
 void ComputationLowerer::Visit(
@@ -2253,6 +2542,8 @@ void ComputationLowerer::Visit(
     HloInstruction* hlo_instruction =
         hlo_builder_.AddInstruction(std::move(instruction));
     hlo_instruction->set_metadata(request.request().metadata());
+    hlo_instruction->set_device_assignment(
+        request.request().device_assignment());
     return hlo_instruction;
   };
   auto lookup_instruction = [&](const ComputationDataHandle& handle) {
@@ -2275,7 +2566,7 @@ void ComputationLowerer::Visit(
       const ConstantRequest& constant_request =
           request.request().constant_request();
       hlo_instruction = add_instruction(HloInstruction::CreateConstant(
-          LiteralUtil::CloneToUnique(Literal(constant_request.literal()))));
+          Literal(constant_request.literal()).CloneToUnique()));
       break;
     }
 
@@ -2295,7 +2586,8 @@ void ComputationLowerer::Visit(
       hlo_instruction = add_instruction(HloInstruction::CreateSlice(
           request.output_shape(), operand,
           AsInt64Slice(slice_request.start_indices()),
-          AsInt64Slice(slice_request.limit_indices())));
+          AsInt64Slice(slice_request.limit_indices()),
+          AsInt64Slice(slice_request.strides())));
       break;
     }
 
@@ -2452,6 +2744,66 @@ void ComputationLowerer::Visit(
           request.output_shape(), operand, select_computation,
           select_and_scatter_request.window(), source, init_value,
           scatter_computation));
+      break;
+    }
+
+    case OpRequest::kBatchNormTrainingRequest: {
+      const BatchNormTrainingRequest& batch_norm_training_request =
+          request.request().batch_norm_training_request();
+      HloInstruction* operand =
+          lookup_instruction(batch_norm_training_request.operand());
+      HloInstruction* scale =
+          lookup_instruction(batch_norm_training_request.scale());
+      HloInstruction* offset =
+          lookup_instruction(batch_norm_training_request.offset());
+
+      hlo_instruction = add_instruction(HloInstruction::CreateBatchNormTraining(
+          request.output_shape(), operand, scale, offset,
+          batch_norm_training_request.epsilon(),
+          batch_norm_training_request.feature_index()));
+      break;
+    }
+
+    case OpRequest::kBatchNormInferenceRequest: {
+      const BatchNormInferenceRequest& batch_norm_inference_request =
+          request.request().batch_norm_inference_request();
+      HloInstruction* operand =
+          lookup_instruction(batch_norm_inference_request.operand());
+      HloInstruction* scale =
+          lookup_instruction(batch_norm_inference_request.scale());
+      HloInstruction* offset =
+          lookup_instruction(batch_norm_inference_request.offset());
+      HloInstruction* mean =
+          lookup_instruction(batch_norm_inference_request.mean());
+      HloInstruction* variance =
+          lookup_instruction(batch_norm_inference_request.variance());
+
+      hlo_instruction =
+          add_instruction(HloInstruction::CreateBatchNormInference(
+              request.output_shape(), operand, scale, offset, mean, variance,
+              batch_norm_inference_request.epsilon(),
+              batch_norm_inference_request.feature_index()));
+      break;
+    }
+
+    case OpRequest::kBatchNormGradRequest: {
+      const BatchNormGradRequest& batch_norm_grad_request =
+          request.request().batch_norm_grad_request();
+
+      HloInstruction* operand =
+          lookup_instruction(batch_norm_grad_request.operand());
+      HloInstruction* scale =
+          lookup_instruction(batch_norm_grad_request.scale());
+      HloInstruction* mean = lookup_instruction(batch_norm_grad_request.mean());
+      HloInstruction* variance =
+          lookup_instruction(batch_norm_grad_request.variance());
+      HloInstruction* grad_output =
+          lookup_instruction(batch_norm_grad_request.grad_output());
+
+      hlo_instruction = add_instruction(HloInstruction::CreateBatchNormGrad(
+          request.output_shape(), operand, scale, mean, variance, grad_output,
+          batch_norm_grad_request.epsilon(),
+          batch_norm_grad_request.feature_index()));
       break;
     }
 
@@ -2644,19 +2996,34 @@ void ComputationLowerer::Visit(
       HloInstruction* lhs = lookup_instruction(binary_op_request.lhs());
       HloInstruction* rhs = lookup_instruction(binary_op_request.rhs());
       auto hlo_opcode = BinaryOperationToHloOpcode(binary_op_request.binop());
-      if (binary_op_request.broadcast_dimensions_size() > 0) {
+      if (binary_op_request.broadcast_dimensions_size() > 0 &&
+          ShapeUtil::Rank(lhs->shape()) != ShapeUtil::Rank(rhs->shape())) {
         // Emit a broadcast instruction to perform the "broadcast in dimension"
         // operation.
-        CHECK_NE(ShapeUtil::Rank(lhs->shape()), ShapeUtil::Rank(rhs->shape()));
         HloInstruction* operand_to_broadcast =
             ShapeUtil::Rank(lhs->shape()) < ShapeUtil::Rank(rhs->shape()) ? lhs
                                                                           : rhs;
-        Shape broadcast_shape = ShapeUtil::MakeShape(
-            operand_to_broadcast->shape().element_type(),
-            AsInt64Slice(request.output_shape().dimensions()));
-
         CHECK_EQ(ShapeUtil::Rank(operand_to_broadcast->shape()),
                  binary_op_request.broadcast_dimensions().size());
+
+        // Construct the bounds of the shape of the kBroadcast instruction
+        // responsible for the in-dimension broadcast.
+        std::vector<int64> output_dimensions;
+        for (int64 size : request.output_shape().dimensions()) {
+          output_dimensions.push_back(size);
+        }
+        for (int64 operand_dim = 0;
+             operand_dim < ShapeUtil::Rank(operand_to_broadcast->shape());
+             ++operand_dim) {
+          int64 output_dim =
+              binary_op_request.broadcast_dimensions()[operand_dim];
+          output_dimensions[output_dim] =
+              operand_to_broadcast->shape().dimensions(operand_dim);
+        }
+
+        Shape broadcast_shape = ShapeUtil::MakeShape(
+            operand_to_broadcast->shape().element_type(), output_dimensions);
+
         // The broadcast semantics of a client-level binary op broadcast is
         // identical to the HLO broadcast semantics so the broadcast_dimensions
         // field can just be passed to the instruction builder.
@@ -2668,8 +3035,8 @@ void ComputationLowerer::Visit(
         lhs = (lhs == operand_to_broadcast) ? broadcasted_operand : lhs;
         rhs = (rhs == operand_to_broadcast) ? broadcasted_operand : rhs;
       }
-      if (legacy_flags::GetUserComputationFlags()
-              ->xla_eliminate_hlo_implicit_broadcast) {
+      if (debug_options_.xla_eliminate_hlo_implicit_broadcast() &&
+          binary_op_request.binop() != BINOP_DOT) {
         if (!ShapeUtil::SameDimensions(request.output_shape(), lhs->shape())) {
           // lhs side is being implicitly broadcast. Change to explicit.
           lhs =
@@ -2683,6 +3050,18 @@ void ComputationLowerer::Visit(
       }
       hlo_instruction = add_instruction(HloInstruction::CreateBinary(
           request.output_shape(), hlo_opcode, lhs, rhs));
+      break;
+    }
+
+    case OpRequest::kReducePrecisionRequest: {
+      const ReducePrecisionRequest& reduce_precision_request =
+          request.request().reduce_precision_request();
+      HloInstruction* operand =
+          lookup_instruction(reduce_precision_request.operand());
+      auto exponent_bits = reduce_precision_request.exponent_bits();
+      auto mantissa_bits = reduce_precision_request.mantissa_bits();
+      hlo_instruction = add_instruction(HloInstruction::CreateReducePrecision(
+          request.output_shape(), operand, exponent_bits, mantissa_bits));
       break;
     }
 
@@ -2716,7 +3095,7 @@ void ComputationLowerer::Visit(
 
 StatusOr<std::unique_ptr<HloComputation>> UserComputation::BuildHloComputation(
     VersionedComputationHandle::Version version,
-    HloComputationResolver hlo_resolver,
+    HloComputationResolver hlo_resolver, const DebugOptions& debug_options,
     bool include_unreachable_instructions) const {
   tensorflow::mutex_lock lock(mutex_);
 
@@ -2728,10 +3107,9 @@ StatusOr<std::unique_ptr<HloComputation>> UserComputation::BuildHloComputation(
       std::unique_ptr<HloComputation> hlo_computation,
       ComputationLowerer::Lower(
           tensorflow::strings::StrCat(name(), ".v", version),
-          session_computation_, version, std::move(hlo_resolver),
+          session_computation_, version, std::move(hlo_resolver), debug_options,
           include_unreachable_instructions));
 
-  XLA_VLOG_LINES(2, hlo_computation->ToString());
   return std::move(hlo_computation);
 }
 

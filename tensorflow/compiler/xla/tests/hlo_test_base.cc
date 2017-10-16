@@ -24,14 +24,12 @@ limitations under the License.
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
 #include "tensorflow/compiler/xla/layout_util.h"
 #include "tensorflow/compiler/xla/legacy_flags/debug_options_flags.h"
-#include "tensorflow/compiler/xla/legacy_flags/hlo_test_base_flags.h"
 #include "tensorflow/compiler/xla/ptr_util.h"
 #include "tensorflow/compiler/xla/service/backend.h"
 #include "tensorflow/compiler/xla/service/computation_layout.h"
 #include "tensorflow/compiler/xla/service/executable.h"
 #include "tensorflow/compiler/xla/service/hlo_computation.h"
 #include "tensorflow/compiler/xla/service/hlo_execution_profile.h"
-#include "tensorflow/compiler/xla/service/hlo_graph_dumper.h"
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
 #include "tensorflow/compiler/xla/service/transfer_manager.h"
 #include "tensorflow/compiler/xla/shape_layout.h"
@@ -40,6 +38,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/types.h"
 #include "tensorflow/core/common_runtime/eigen_thread_pool.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace se = ::perftools::gputools;
@@ -53,32 +52,25 @@ struct HloTestBase::EigenThreadPoolWrapper {
   std::unique_ptr<Eigen::ThreadPoolDevice> device;
 };
 
-HloTestBase::HloTestBase()
-    : backend_(Backend::CreateDefaultBackend().ConsumeValueOrDie()) {
-  // TODO(b/62411181): get rid of this flag entirely when the usual debug flags
-  // are piped to all HLO tests.
-  test_hlo_dumper_ = [](const HloModule& module, const string& label) {
-    legacy_flags::HloTestBaseFlags* flags = legacy_flags::GetHloTestBaseFlags();
-    if (flags->xla_hlo_test_generate_hlo_graph) {
-      const bool show_addresses = true;
-      const bool show_layouts = true;
-      hlo_graph_dumper::DumpGraph(*module.entry_computation(), label,
-                                  show_addresses, show_layouts);
-    }
-  };
-  VLOG(1) << "executing on platform " << backend_->platform()->Name();
-}
+HloTestBase::HloTestBase() {}
 
 HloTestBase::~HloTestBase() {
   // Deallocate all the memory allocated during the tests.
   for (auto& allocation : allocations_) {
-    backend_->default_stream_executor()->Deallocate(&allocation);
+    backend().default_stream_executor()->Deallocate(&allocation);
   }
 }
 
+/* static */
 std::unique_ptr<HloModule> HloTestBase::CreateNewModule() {
   HloModuleConfig config;
-  config.set_debug_options(legacy_flags::GetDebugOptionsFromFlags());
+
+  auto debug_options = legacy_flags::GetDebugOptionsFromFlags();
+  // TODO(b/38354253): Change tests to use Parameters instead of Constants.
+  debug_options.add_xla_disable_hlo_passes("constant_folding");
+
+  config.set_debug_options(debug_options);
+
   return MakeUnique<HloModule>(TestName(), VersionedComputationHandle(),
                                config);
 }
@@ -90,23 +82,23 @@ StatusOr<perftools::gputools::DeviceMemoryBase> HloTestBase::Execute(
     Shape* result_shape) {
   TF_ASSIGN_OR_RETURN(
       std::unique_ptr<Executable> executable,
-      backend_->compiler()->Compile(std::move(module), test_hlo_dumper_,
-                                    backend_->default_stream_executor()));
+      backend().compiler()->Compile(std::move(module),
+                                    backend().default_stream_executor()));
 
-  se::Stream stream(backend_->default_stream_executor());
+  se::Stream stream(backend().default_stream_executor());
   stream.Init();
 
   ExecutableRunOptions run_options;
   run_options.set_stream(&stream);
-  run_options.set_allocator(backend_->memory_allocator());
-  run_options.set_inter_op_thread_pool(backend_->inter_op_thread_pool());
+  run_options.set_allocator(backend().memory_allocator());
+  run_options.set_inter_op_thread_pool(backend().inter_op_thread_pool());
   run_options.set_intra_op_thread_pool(
-      backend_->eigen_intra_op_thread_pool_device());
+      backend().eigen_intra_op_thread_pool_device());
 
   HloExecutionProfile hlo_execution_profile;
   ServiceExecutableRunOptions service_run_options(
-      run_options, backend_->StreamBorrower(),
-      backend_->inter_op_thread_pool());
+      run_options, backend().StreamBorrower(),
+      backend().inter_op_thread_pool());
   TF_ASSIGN_OR_RETURN(
       se::DeviceMemoryBase result,
       executable->ExecuteOnStream(&service_run_options, arguments,
@@ -122,8 +114,8 @@ StatusOr<perftools::gputools::DeviceMemoryBase> HloTestBase::Execute(
     DCHECK(!ShapeUtil::IsNestedTuple(*result_shape));
     TF_ASSIGN_OR_RETURN(
         std::vector<se::DeviceMemoryBase> element_buffers,
-        backend_->transfer_manager()->ShallowCopyTupleFromDevice(
-            backend_->default_stream_executor(), result, *result_shape));
+        backend().transfer_manager()->ShallowCopyTupleFromDevice(
+            backend().default_stream_executor(), result, *result_shape));
 
     // A tuple may contain the same buffer in more than one element. Keep track
     // of the buffers already added to avoid duplicates in allocations_.
@@ -143,14 +135,14 @@ StatusOr<perftools::gputools::DeviceMemoryBase> HloTestBase::Execute(
 se::DeviceMemoryBase HloTestBase::TransferToDevice(const Literal& literal) {
   // Allocate memory on the device using the stream executor.
   int64 allocation_size =
-      backend_->transfer_manager()->GetByteSizeRequirement(literal.shape());
+      backend().transfer_manager()->GetByteSizeRequirement(literal.shape());
   se::DeviceMemoryBase allocation =
-      backend_->default_stream_executor()->AllocateArray<uint8>(
+      backend().default_stream_executor()->AllocateArray<uint8>(
           allocation_size);
   allocations_.push_back(allocation);
 
-  TF_CHECK_OK(backend_->transfer_manager()->TransferLiteralToDevice(
-      backend_->default_stream_executor(), literal, &allocation));
+  TF_CHECK_OK(backend().transfer_manager()->TransferLiteralToDevice(
+      backend().default_stream_executor(), literal, &allocation));
 
   return allocation;
 }
@@ -158,8 +150,8 @@ se::DeviceMemoryBase HloTestBase::TransferToDevice(const Literal& literal) {
 std::unique_ptr<Literal> HloTestBase::TransferFromDevice(
     const Shape& shape, se::DeviceMemoryBase device_base) {
   auto literal = MakeUnique<Literal>();
-  TF_CHECK_OK(backend_->transfer_manager()->TransferLiteralFromDevice(
-      backend_->default_stream_executor(), device_base, shape, shape,
+  TF_CHECK_OK(backend().transfer_manager()->TransferLiteralFromDevice(
+      backend().default_stream_executor(), device_base, shape, shape,
       literal.get()));
   return literal;
 }
@@ -171,6 +163,14 @@ std::unique_ptr<Literal> HloTestBase::ExecuteAndTransfer(
   se::DeviceMemoryBase device_base =
       Execute(std::move(module), arguments, &result_shape).ValueOrDie();
   return TransferFromDevice(result_shape, device_base);
+}
+
+Backend& HloTestBase::backend() {
+  if (!backend_) {
+    backend_ = Backend::CreateDefaultBackend().ConsumeValueOrDie();
+    VLOG(1) << "executing on platform " << backend().platform()->Name();
+  }
+  return *backend_;
 }
 
 /* static */

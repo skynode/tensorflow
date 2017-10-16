@@ -30,6 +30,9 @@ namespace xla {
 enum class HloOpcode {
   kAbs,
   kAdd,
+  kBatchNormGrad,
+  kBatchNormInference,
+  kBatchNormTraining,
   kBitcast,
   kBroadcast,
   kCall,
@@ -40,6 +43,7 @@ enum class HloOpcode {
   kConvert,
   kConvolution,
   kCopy,
+  kCos,
   kCrossReplicaSum,
   kCustomCall,
   kDivide,
@@ -58,9 +62,9 @@ enum class HloOpcode {
   kIsFinite,
   kLe,
   kLog,
-  kLogicalAnd,
-  kLogicalNot,
-  kLogicalOr,
+  kAnd,
+  kNot,
+  kOr,
   kLt,
   kMap,
   kMaximum,
@@ -74,15 +78,21 @@ enum class HloOpcode {
   kPower,
   kRecv,
   kReduce,
+  kReducePrecision,
   kReduceWindow,
   kRemainder,
   kReshape,
   kReverse,
   kRng,
+  kRoundNearestAfz,
   kSelect,
   kSelectAndScatter,
   kSend,
+  kShiftLeft,
+  kShiftRightArithmetic,
+  kShiftRightLogical,
   kSign,
+  kSin,
   kSlice,
   kSort,
   kSubtract,
@@ -106,6 +116,11 @@ bool HloOpcodeIsComparison(HloOpcode opcode);
 
 // Returns true iff the given opcode has variadic operands.
 bool HloOpcodeIsVariadic(HloOpcode opcode);
+
+// Returns the number of HloOpcode values.
+inline const uint32_t HloOpcodeCount() {
+  return static_cast<uint32_t>(HloOpcode::kWhile) + 1;
+}
 
 }  // namespace xla
 

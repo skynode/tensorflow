@@ -49,6 +49,28 @@ class SliceTest(test.TestCase):
         slice_val = slice_t.eval()
       self.assertAllEqual(slice_val, inp[2, k:k])
 
+  def testInt64Slicing(self):
+    with self.test_session(use_gpu=True):
+      a = constant_op.constant([0, 1, 2], dtype=dtypes.int64)
+
+      # Slice using int64 Tensor.
+      i = constant_op.constant(1, dtype=dtypes.int64)
+      slice_t = a[i]
+      slice_val = slice_t.eval()
+      self.assertAllEqual(1, slice_val)
+      slice_t = a[i:i+1]
+      slice_val = slice_t.eval()
+      self.assertAllEqual([1], slice_val)
+
+      # Slice using int64 integer.
+      i = np.asarray(1).astype(np.int64)
+      slice_t = a[i]
+      slice_val = slice_t.eval()
+      self.assertAllEqual(1, slice_val)
+      slice_t = a[i:i+1]
+      slice_val = slice_t.eval()
+      self.assertAllEqual([1], slice_val)
+
   def testSelectAll(self):
     for _ in range(10):
       with self.test_session(use_gpu=True):
@@ -194,6 +216,17 @@ class SliceTest(test.TestCase):
     self.assertAllEqual(slice2_val, expected_val)
     self.assertEqual(expected_val.shape, slice_t.get_shape())
     self.assertEqual(expected_val.shape, slice2_t.get_shape())
+
+  def testPartialShapeInference(self):
+    z = array_ops.zeros((1, 2, 3))
+    self.assertAllEqual(z.get_shape().as_list(), [1, 2, 3])
+
+    m1 = array_ops.slice(z, [0, 0, 0], [-1, -1, -1])
+    self.assertAllEqual(m1.get_shape().as_list(), [1, 2, 3])
+
+    m2 = array_ops.slice(z, [0, 0, 0], [constant_op.constant(1) + 0, 2, -1])
+    self.assertAllEqual(m2.get_shape().as_list(), [None, 2, None])
+
 
   def _testGradientSlice(self, input_shape, slice_begin, slice_size):
     with self.test_session(use_gpu=True):

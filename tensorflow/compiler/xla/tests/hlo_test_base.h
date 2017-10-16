@@ -48,7 +48,7 @@ class HloTestBase : public ::testing::Test {
   // TestName() for its name; it will also automatically populate its debug
   // options from command-line flags. It's recommended to use this method to
   // create all HloModules for tests.
-  std::unique_ptr<HloModule> CreateNewModule();
+  static std::unique_ptr<HloModule> CreateNewModule();
 
   // Executes the given module and returns a global data handle.
   StatusOr<perftools::gputools::DeviceMemoryBase> Execute(
@@ -102,9 +102,12 @@ class HloTestBase : public ::testing::Test {
 
   static string TestName();
 
-  std::unique_ptr<Backend> backend_;
-
-  Compiler::HloDumper test_hlo_dumper_;
+  // Creates (if necessary) and returns the default backend.  If creation fails,
+  // crashes the program.
+  //
+  // This creates the backend lazily so it's possible to instantiate an
+  // HloTestBase in a program without any backends linked in.
+  Backend& backend();
 
   // This vector contains handles of all the device memory allocations performed
   // by the test. These are deallocated on destruction of the test object.
@@ -113,6 +116,9 @@ class HloTestBase : public ::testing::Test {
   ErrorSpec error_spec_{0.0001};
 
   std::unique_ptr<EigenThreadPoolWrapper> thread_pool_wrapper_;
+
+ private:
+  std::unique_ptr<Backend> backend_;  // Lazily populated. Access via backend().
 };
 
 }  // namespace xla

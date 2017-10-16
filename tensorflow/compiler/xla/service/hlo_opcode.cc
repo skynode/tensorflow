@@ -19,11 +19,24 @@ limitations under the License.
 namespace xla {
 
 string HloOpcodeString(HloOpcode opcode) {
+  // Note: Do not use ':' in opcode strings. It is used as a special character
+  // in these places:
+  // - In extended opcode strings (HloInstruction::ExtendedOpcodeString()), to
+  //   separate the opcode from the fusion kind
+  // - In fully qualified names (HloInstruction::FullyQualifiedName()), to
+  //   separate the qualifiers (name of the computation and potentially the
+  //   fusion instruction) from the name
   switch (opcode) {
     case HloOpcode::kAbs:
       return "abs";
     case HloOpcode::kAdd:
       return "add";
+    case HloOpcode::kBatchNormTraining:
+      return "batch-norm-training";
+    case HloOpcode::kBatchNormInference:
+      return "batch-norm-inference";
+    case HloOpcode::kBatchNormGrad:
+      return "batch-norm-grad";
     case HloOpcode::kBitcast:
       return "bitcast";
     case HloOpcode::kBroadcast:
@@ -40,6 +53,8 @@ string HloOpcodeString(HloOpcode opcode) {
       return "convert";
     case HloOpcode::kConvolution:
       return "convolution";
+    case HloOpcode::kCos:
+      return "cosine";
     case HloOpcode::kCrossReplicaSum:
       return "cross-replica-sum";
     case HloOpcode::kCustomCall:
@@ -80,12 +95,12 @@ string HloOpcodeString(HloOpcode opcode) {
       return "less-than-or-equal-to";
     case HloOpcode::kLog:
       return "log";
-    case HloOpcode::kLogicalAnd:
-      return "logical-and";
-    case HloOpcode::kLogicalOr:
-      return "logical-or";
-    case HloOpcode::kLogicalNot:
-      return "logical-not";
+    case HloOpcode::kAnd:
+      return "and";
+    case HloOpcode::kOr:
+      return "or";
+    case HloOpcode::kNot:
+      return "not";
     case HloOpcode::kLt:
       return "less-than";
     case HloOpcode::kMap:
@@ -112,6 +127,8 @@ string HloOpcodeString(HloOpcode opcode) {
       return "recv";
     case HloOpcode::kReduce:
       return "reduce";
+    case HloOpcode::kReducePrecision:
+      return "reduce-precision";
     case HloOpcode::kReduceWindow:
       return "reduce-window";
     case HloOpcode::kRemainder:
@@ -122,14 +139,24 @@ string HloOpcodeString(HloOpcode opcode) {
       return "reverse";
     case HloOpcode::kRng:
       return "rng";
+    case HloOpcode::kRoundNearestAfz:
+      return "round-nearest-afz";
     case HloOpcode::kSelectAndScatter:
       return "select-and-scatter";
     case HloOpcode::kSelect:
       return "select";
     case HloOpcode::kSend:
       return "send";
+    case HloOpcode::kShiftLeft:
+      return "shift-left";
+    case HloOpcode::kShiftRightArithmetic:
+      return "shift-right-arithmetic";
+    case HloOpcode::kShiftRightLogical:
+      return "shift-right-logical";
     case HloOpcode::kSign:
       return "sign";
+    case HloOpcode::kSin:
+      return "sine";
     case HloOpcode::kSlice:
       return "slice";
     case HloOpcode::kSort:

@@ -29,10 +29,12 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
-constexpr char kTestDataPbTxt[] =
-    "cc/saved_model/testdata/half_plus_two_pbtxt/00000123";
+constexpr char kTestDataForwardCompatibility[] =
+    "cc/saved_model/testdata/half_plus_two_forward_compatibility/00000123";
 constexpr char kTestDataMainOp[] =
     "cc/saved_model/testdata/half_plus_two_main_op/00000123";
+constexpr char kTestDataPbTxt[] =
+    "cc/saved_model/testdata/half_plus_two_pbtxt/00000123";
 constexpr char kTestDataSharded[] =
     "cc/saved_model/testdata/half_plus_two/00000123";
 
@@ -133,9 +135,9 @@ TEST_F(LoaderTest, NoTagMatch) {
   Status st = LoadSavedModel(session_options, run_options, export_dir,
                              {"missing-tag"}, &bundle);
   EXPECT_FALSE(st.ok());
-  EXPECT_TRUE(
-      StringPiece(st.error_message())
-          .contains("Could not find meta graph def matching supplied tags."))
+  EXPECT_TRUE(StringPiece(st.error_message())
+                  .contains("Could not find meta graph def matching supplied "
+                            "tags: { missing-tag }"))
       << st.error_message();
 }
 
@@ -151,7 +153,7 @@ TEST_F(LoaderTest, NoTagMatchMultiple) {
   EXPECT_FALSE(st.ok());
   EXPECT_TRUE(
       StringPiece(st.error_message())
-          .contains("Could not find meta graph def matching supplied tags."))
+          .contains("Could not find meta graph def matching supplied tags: "))
       << st.error_message();
 }
 
@@ -162,6 +164,24 @@ TEST_F(LoaderTest, PbtxtFormat) {
 
   const string export_dir =
       io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPbTxt);
+  TF_ASSERT_OK(LoadSavedModel(session_options, run_options, export_dir,
+                              {kSavedModelTagServe}, &bundle));
+  CheckSavedModelBundle(export_dir, bundle);
+}
+
+// Forward compatibility graph has a new attr with a default value equal to the
+// value used by the server. If we handle new default attrs correctly, this test
+// will pass. This simulates adding new atts to the training code while server
+// code lags behind.
+TEST_F(LoaderTest, ForwardCompatibility) {
+  SavedModelBundle bundle;
+  SessionOptions session_options;
+  RunOptions run_options;
+
+  // TODO(b/67753689): Add support for regenerating this model in the export
+  // code.
+  const string export_dir =
+      io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataForwardCompatibility);
   TF_ASSERT_OK(LoadSavedModel(session_options, run_options, export_dir,
                               {kSavedModelTagServe}, &bundle));
   CheckSavedModelBundle(export_dir, bundle);

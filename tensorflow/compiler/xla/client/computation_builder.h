@@ -37,7 +37,6 @@ limitations under the License.
 #include "tensorflow/core/lib/core/stringpiece.h"
 #include "tensorflow/core/lib/gtl/array_slice.h"
 #include "tensorflow/core/platform/macros.h"
-#include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/stacktrace.h"
 #include "tensorflow/core/platform/types.h"
 
@@ -57,10 +56,10 @@ class ComputationBuilder {
   ~ComputationBuilder();
 
   // Returns the client the builder was initialized with.
-  Client* client() { return client_; }
+  Client* client() const { return client_; }
 
   // Returns the computation name.
-  const string& name() { return name_; }
+  const string& name() const { return name_; }
 
   // Sets OpMetadata that will be added to all instructions until cleared.
   //
@@ -69,15 +68,21 @@ class ComputationBuilder {
   // instructions generated via this Computation Builder will have the same
   // OpMetadata attached until a call to ClearOpMetdata.
   void SetOpMetadata(const OpMetadata& metadata) {
-    tensorflow::mutex_lock lock(mutex_);
     metadata_ = metadata;
   }
 
-  // Clears the HloMetdata state.
+  // Clears the HloMetadata state.
   void ClearOpMetadata() {
-    tensorflow::mutex_lock lock(mutex_);
     metadata_.Clear();
   }
+
+  // Sets an OpDeviceAssignment that will be attached to all instructions
+  // until cleared.
+  void SetDeviceAssignment(const OpDeviceAssignment& assignment);
+
+  // Clears the device assignment. Ops will be placed according to the default
+  // placement policy.
+  void ClearDeviceAssignment();
 
   // Sets the builder to a mode where it will die immediately when an error is
   // encountered, rather than producing it in a deferred fashion when Build() is
@@ -196,6 +201,16 @@ class ComputationBuilder {
   // {x=1024, y=32} by collapsing dims {0, 1, 2}. Collapsing dimensions must
   // be a consecutive, in-order subsequence of the operand dimensions.
   //
+  // Note that collapsing a single dimension does nothing:
+  //
+  //    {256} collapsing {0} => {256}
+  //    {1} collapsing {0} => {1}
+  //
+  // Collapsing multiple dimensions produces a single result dimension:
+  //
+  //    {256, 2} collapsing {0,1} => {512}
+  //    {256, 2, 3} collapsing {0,1} => {512, 3}
+  //
   // This could potentially cause data to be moved -- it provides a more
   // structured form of reshaping than an arbitrary Reshape operation.
   ComputationDataHandle Collapse(const ComputationDataHandle& operand,
@@ -211,9 +226,21 @@ class ComputationBuilder {
   //
   // Note that "limit" means up-to-but-not-including; i.e. [start, limit) in 1D
   // range notation.
+  // The strides parameter determines the stride over the slice
   ComputationDataHandle Slice(const ComputationDataHandle& operand,
                               tensorflow::gtl::ArraySlice<int64> start_indices,
-                              tensorflow::gtl::ArraySlice<int64> limit_indices);
+                              tensorflow::gtl::ArraySlice<int64> limit_indices,
+                              tensorflow::gtl::ArraySlice<int64> strides);
+
+  // Enqueues a slice operation in a given dimension, taking all other
+  // dimensions as they are; e.g. if dimno is 1 from start_index 2 to
+  // limit_index 4 by 1, and the shape is f32[7,8,9], this call is short-hand
+  // for:
+  //
+  //  array[:, 2:4:1, :]
+  ComputationDataHandle SliceInDim(const ComputationDataHandle& operand,
+                                   int64 start_index, int64 limit_index,
+                                   int64 stride, int64 dimno);
 
   // Enqueues a slice operation onto the computation that slices the 'operand'
   // from dynamic start indices which are passed in 'start_indices'.
@@ -327,7 +354,8 @@ class ComputationBuilder {
   // Creates a ConvolutionDimensionNumbers with the given arguments. Returns an
   // error if either the input or the weight dimension numbers have conflicts.
   static StatusOr<ConvolutionDimensionNumbers> CreateConvDimensionNumbers(
-      int64 batch, int64 feature, int64 first_spatial, int64 second_spatial,
+      int64 input_batch, int64 input_feature, int64 output_batch,
+      int64 output_feature, int64 first_spatial, int64 second_spatial,
       int64 kernel_output_feature, int64 kernel_input_feature,
       int64 kernel_first_spatial, int64 kernel_second_spatial);
 
@@ -434,15 +462,25 @@ class ComputationBuilder {
       tensorflow::gtl::ArraySlice<int64> broadcast_dimensions = {});
 
   // Element-wise logical operators
-  ComputationDataHandle LogicalAnd(
+  ComputationDataHandle And(
       const ComputationDataHandle& lhs, const ComputationDataHandle& rhs,
       tensorflow::gtl::ArraySlice<int64> broadcast_dimensions = {});
 
-  ComputationDataHandle LogicalOr(
+  ComputationDataHandle Or(
       const ComputationDataHandle& lhs, const ComputationDataHandle& rhs,
       tensorflow::gtl::ArraySlice<int64> broadcast_dimensions = {});
 
-  ComputationDataHandle LogicalNot(const ComputationDataHandle& lhs);
+  ComputationDataHandle Not(const ComputationDataHandle& operand);
+
+  ComputationDataHandle ShiftLeft(
+      const ComputationDataHandle& lhs, const ComputationDataHandle& rhs,
+      tensorflow::gtl::ArraySlice<int64> broadcast_dimensions = {});
+  ComputationDataHandle ShiftRightArithmetic(
+      const ComputationDataHandle& lhs, const ComputationDataHandle& rhs,
+      tensorflow::gtl::ArraySlice<int64> broadcast_dimensions = {});
+  ComputationDataHandle ShiftRightLogical(
+      const ComputationDataHandle& lhs, const ComputationDataHandle& rhs,
+      tensorflow::gtl::ArraySlice<int64> broadcast_dimensions = {});
 
   // Reduces an array among the provided dimensions, given "computation" as a
   // reduction operator.
@@ -450,6 +488,12 @@ class ComputationBuilder {
       const ComputationDataHandle& operand,
       const ComputationDataHandle& init_value, const Computation& computation,
       tensorflow::gtl::ArraySlice<int64> dimensions_to_reduce);
+
+  // Convenience wrapper around the above that reduces all the dimensions in the
+  // operand shape.
+  ComputationDataHandle ReduceAll(const ComputationDataHandle& operand,
+                                  const ComputationDataHandle& init_value,
+                                  const Computation& computation);
 
   // Enqueues a windowed reduce instruction onto the computation.
   ComputationDataHandle ReduceWindow(
@@ -502,11 +546,21 @@ class ComputationBuilder {
   // Enqueues a ceil instruction onto the computation.
   ComputationDataHandle Ceil(const ComputationDataHandle& operand);
 
+  // Enqueues a round instruction onto the computation, rounding to nearest even
+  // with half-way cases rounding away from zero.
+  ComputationDataHandle Round(const ComputationDataHandle& operand);
+
   // Enqueues an log instruction (natural logarithm) onto the computation.
   ComputationDataHandle Log(const ComputationDataHandle& operand);
 
   // Enqueues a sign instruction onto the computation.
   ComputationDataHandle Sign(const ComputationDataHandle& operand);
+
+  // Enqueues a cosine instruction onto the computation.
+  ComputationDataHandle Cos(const ComputationDataHandle& operand);
+
+  // Enqueues a sine instruction onto the computation.
+  ComputationDataHandle Sin(const ComputationDataHandle& operand);
 
   // Enqueues a tanh instruction onto the computation.
   ComputationDataHandle Tanh(const ComputationDataHandle& operand);
@@ -571,6 +625,7 @@ class ComputationBuilder {
   ComputationDataHandle Map(
       tensorflow::gtl::ArraySlice<ComputationDataHandle> operands,
       const Computation& computation,
+      tensorflow::gtl::ArraySlice<int64> dimensions,
       tensorflow::gtl::ArraySlice<ComputationDataHandle> static_operands = {});
 
   // Enqueues a N(mu, sigma) random number generation instruction onto the
@@ -594,6 +649,11 @@ class ComputationBuilder {
   ComputationDataHandle While(const Computation& condition,
                               const Computation& body,
                               const ComputationDataHandle& init);
+
+  // Enqueues a ReducePrecision node onto the computation.
+  ComputationDataHandle ReducePrecision(const ComputationDataHandle& operand,
+                                        const int exponent_bits,
+                                        const int mantissa_bits);
 
   // Enqueues a Send node onto the computation, to send the given operand to
   // a Recv instruction that shares the same channel handle.
@@ -656,12 +716,12 @@ class ComputationBuilder {
   // Computes the value of a constant indicated by a
   // ComputationDataHandle.
   //
-  // The handle must be from the computation currently being built -
+  // The operand must be from the computation currently being built -
   // i.e., returned from this builder with no intervening call to
   // Build(). This happens to currently work regardless of that, but
   // that may stop working at any time.
   //
-  // The handle must represent a constant value, which in this case
+  // The operand must represent a constant value, which in this case
   // means that it must not statically depend on a parameter to the
   // computation that is being built.
   //
@@ -679,8 +739,8 @@ class ComputationBuilder {
   //
   // If output_layout is non-null, then the output of the computation
   // will be stored using that layout.
-  StatusOr<std::unique_ptr<GlobalData>> ComputeConstant(
-      const ComputationDataHandle& handle,
+  StatusOr<std::unique_ptr<Literal>> ComputeConstant(
+      const ComputationDataHandle& operand,
       const Layout* output_layout = nullptr);
 
   // Returns a new ComputationBuilder whose resultant Computation is used only
@@ -785,7 +845,7 @@ class ComputationBuilder {
   // * dying if die_immediately_on_error_ is true
   void NoteError(const Status& error);
 
-  void AddOpMetadata(OpRequest* request) const;
+  void AddCommonFieldsToOpRequest(OpRequest* request) const;
 
   string name_;  // Name to use for the built computation.
 
@@ -803,102 +863,95 @@ class ComputationBuilder {
   Client* client_;
 
   // Mode bit that indicates whether to die when a first error is encountered.
-  bool die_immediately_on_error_{false};
-
-  // Mutex to guard against concurrent access to metadata_.
-  mutable tensorflow::mutex mutex_;
+  bool die_immediately_on_error_ = false;
 
   // The metadata to attach to each op. This is structured as a "modal"-like
   // operation, in order to simplify client code (and not sprinkle this metadata
   // throughout the TensorFlow op kernel implementations).
-  OpMetadata metadata_ GUARDED_BY(mutex_);
+  OpMetadata metadata_;
+
+  // Device assignment for the operator.
+  OpDeviceAssignment device_assignment_;
 
   TF_DISALLOW_COPY_AND_ASSIGN(ComputationBuilder);
 };
 
 template <typename NativeT>
 ComputationDataHandle ComputationBuilder::ConstantR0(NativeT value) {
-  return ConstantOp(
-      [value](Literal* literal) { LiteralUtil::PopulateR0(value, literal); });
+  return ConstantOp([value](Literal* literal) { literal->PopulateR0(value); });
 }
 
 template <typename NativeT>
 ComputationDataHandle ComputationBuilder::ConstantR1(
     tensorflow::gtl::ArraySlice<NativeT> values) {
-  return ConstantOp([&values](Literal* literal) {
-    LiteralUtil::PopulateR1(values, literal);
-  });
+  return ConstantOp(
+      [&values](Literal* literal) { literal->PopulateR1(values); });
 }
 
 template <typename NativeT>
 ComputationDataHandle ComputationBuilder::ConstantR1(int64 length,
                                                      NativeT value) {
   return ConstantOp([length, value](Literal* literal) {
-    LiteralUtil::PopulateWithValue(value, {length}, literal);
+    literal->PopulateWithValue(value, {length});
   });
 }
 
 inline ComputationDataHandle ComputationBuilder::ConstantR1(
     const tensorflow::core::Bitmap& values) {
-  return ConstantOp([&values](Literal* literal) {
-    LiteralUtil::PopulateR1(values, literal);
-  });
+  return ConstantOp(
+      [&values](Literal* literal) { literal->PopulateR1(values); });
 }
 
 template <typename NativeT>
 ComputationDataHandle ComputationBuilder::ConstantR2(
     std::initializer_list<std::initializer_list<NativeT>> values) {
-  return ConstantOp([&values](Literal* literal) {
-    LiteralUtil::PopulateR2(values, literal);
-  });
+  return ConstantOp(
+      [&values](Literal* literal) { literal->PopulateR2(values); });
 }
 
 template <typename NativeT>
 ComputationDataHandle ComputationBuilder::ConstantR2FromArray2DWithLayout(
     const Array2D<NativeT>& values, const Layout& layout) {
   return ConstantOp([&values, &layout](Literal* literal) {
-    LiteralUtil::PopulateR2FromArray2DWithLayout(values, layout, literal);
+    literal->PopulateR2FromArray2DWithLayout(values, layout);
   });
 }
 
 template <typename NativeT>
 ComputationDataHandle ComputationBuilder::ConstantR2FromArray2D(
     const Array2D<NativeT>& values) {
-  return ConstantOp([&values](Literal* literal) {
-    LiteralUtil::PopulateR2FromArray2D(values, literal);
-  });
+  return ConstantOp(
+      [&values](Literal* literal) { literal->PopulateR2FromArray2D(values); });
 }
 
 template <typename NativeT>
 ComputationDataHandle ComputationBuilder::ConstantR3FromArray3DWithLayout(
     const Array3D<NativeT>& values, const Layout& layout) {
   return ConstantOp([&values, &layout](Literal* literal) {
-    LiteralUtil::PopulateR3FromArray3DWithLayout(values, layout, literal);
+    literal->PopulateR3FromArray3DWithLayout(values, layout);
   });
 }
 
 template <typename NativeT>
 ComputationDataHandle ComputationBuilder::ConstantR3FromArray3D(
     const Array3D<NativeT>& values) {
-  return ConstantOp([&values](Literal* literal) {
-    LiteralUtil::PopulateR3FromArray3D(values, literal);
-  });
+  return ConstantOp(
+      [&values](Literal* literal) { literal->PopulateR3FromArray3D(values); });
 }
 
 template <typename NativeT>
 ComputationDataHandle ComputationBuilder::ConstantR4FromArray4DWithLayout(
     const Array4D<NativeT>& values, const Layout& layout) {
   return ConstantOp([&values, &layout](Literal* literal) {
-    LiteralUtil::PopulateR4FromArray4DWithLayout(values, layout, literal);
+    literal->PopulateR4FromArray4DWithLayout(values, layout);
   });
 }
 
 template <typename NativeT>
 ComputationDataHandle ComputationBuilder::ConstantR4FromArray4D(
     const Array4D<NativeT>& values) {
-  return ConstantOp([&values](Literal* literal) {
-    LiteralUtil::PopulateR4FromArray4D(values, literal);
-  });
+  return ConstantOp(
+      [&values](Literal* literal) { literal->PopulateR4FromArray4D(values); });
 }
 
 }  // namespace xla
